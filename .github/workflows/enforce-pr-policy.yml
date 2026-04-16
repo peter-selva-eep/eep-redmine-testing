@@ -1,0 +1,70 @@
+name: Enforce PR Policy
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Validate source branch naming
+        run: |
+          BRANCH="${{ github.head_ref }}"
+
+          # Allowed patterns:
+          #   features/<number>  bugs/<number>  issues/<number>
+          #   release/<version>  hotfix/<version>
+          #   e.g. release/1.2.3  hotfix/2.0.1
+          VALID_FEATURE="^(features|bugs|issues)/[0-9]+$"
+          VALID_SEMVER="^(release|hotfix)/[0-9]+\.[0-9]+(\.[0-9]+)?$"
+
+          if [[ "$BRANCH" =~ $VALID_FEATURE ]] || [[ "$BRANCH" =~ $VALID_SEMVER ]]; then
+            echo "✅ Branch name is valid: $BRANCH"
+          else
+            echo "⚠️  Non-conforming branch: $BRANCH"
+            echo ""
+            echo "Allowed formats:"
+            echo "  features/<id>       e.g. features/123"
+            echo "  bugs/<id>           e.g. bugs/456"
+            echo "  issues/<id>         e.g. issues/789"
+            echo "  release/<version>   e.g. release/1.2.0"
+            echo "  hotfix/<version>    e.g. hotfix/1.2.1"
+            echo ""
+            echo "Non-conforming branches can still be linked manually"
+            echo "by referencing this branch name in the Redmine issue."
+            # Change 'exit 1' to 'exit 0' if you want warn-only (no block)
+            exit 1
+          fi
+
+      - name: Validate PR title format
+        run: |
+          TITLE="${{ github.event.pull_request.title }}"
+          if [[ ! "$TITLE" =~ ^.+\ \(#[0-9]+\)$ ]]; then
+            echo "❌ PR title must follow: <title> (#issue-number)"
+            echo "Example: Add login feature (#123)"
+            exit 1
+          fi
+          echo "✅ PR title is valid: $TITLE"
+
+      - name: Validate branch issue ID matches PR title issue ID
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          TITLE="${{ github.event.pull_request.title }}"
+
+          # Only enforce cross-check for feature/bug/issue branches (numeric suffix)
+          if [[ "$BRANCH" =~ ^(features|bugs|issues)/([0-9]+)$ ]]; then
+            ISSUE_BRANCH="${BASH_REMATCH[2]}"
+            ISSUE_TITLE=$(echo "$TITLE" | grep -oE '[0-9]+$' | tail -1)
+
+            if [[ "$ISSUE_BRANCH" != "$ISSUE_TITLE" ]]; then
+              echo "❌ Issue number mismatch:"
+              echo "  Branch references: #$ISSUE_BRANCH"
+              echo "  PR title references: #$ISSUE_TITLE"
+              exit 1
+            fi
+            echo "✅ Issue IDs match: #$ISSUE_BRANCH"
+          else
+            echo "ℹ️  Skipping issue ID cross-check for release/hotfix branch"
+          fi
