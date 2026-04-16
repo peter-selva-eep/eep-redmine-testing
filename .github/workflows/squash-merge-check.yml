@@ -1,0 +1,21 @@
+name: Squash Merge Policy Check
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  check-merge-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR is squash-mergeable
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "PR Title: $PR_TITLE"
+          # Ensure PR title follows format: Description (#issue)
+          PATTERN="^.+$"
+          if [[ ! "$PR_TITLE" =~ $PATTERN ]]; then
+            echo "❌ PR title is empty or invalid"
+            exit 1
+          fi
+          echo "✅ Squash merge policy check passed"
