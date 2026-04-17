@@ -1,0 +1,34 @@
+name: Auto Assign Reviewers
+
+on:
+  pull_request:
+    types: [opened, reopened]
+    branches:
+      - develop
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  auto-assign:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assign Team-Lead as reviewer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Step 1 — verify the team slug exists
+          echo "Available teams:"
+          gh api orgs/eva-equity-partners-testing-01/teams \
+            --jq '.[] | "  slug: \(.slug)  name: \(.name)"'
+
+          # Step 2 — assign via REST API (more reliable than gh pr edit for teams)
+          gh api \
+            --method POST \
+            repos/$REPO/pulls/$PR_NUMBER/requested_reviewers \
+            -f "team_reviewers[]=team-lead"    # ← replace with your exact slug
+
+          echo "✅ Reviewer assigned successfully"
