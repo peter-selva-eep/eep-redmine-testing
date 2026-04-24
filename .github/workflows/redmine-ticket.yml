@@ -25,8 +25,8 @@ jobs:
         id: flag
         run: |
           FLAG="${{ vars.VALIDATE_REDMINE }}"
-          echo "VALIDATE_REDMINE flag: $FLAG"
-          if [ "$FLAG" == "YES" ]; then
+          echo "VALIDATE_REDMINE flag value: '$FLAG'"
+          if [ "$FLAG" = "YES" ]; then
             echo "enabled=true" >> $GITHUB_OUTPUT
             echo "Redmine validation is ENABLED"
           else
@@ -34,11 +34,12 @@ jobs:
             echo "Redmine validation is DISABLED — skipping all checks"
           fi
 
-      - name: Skip notification
+      - name: Skipping — VALIDATE_REDMINE is not YES
         if: steps.flag.outputs.enabled == 'false'
         run: |
-          echo "VALIDATE_REDMINE is set to NO"
-          echo "Skipping all Redmine ticket validation steps"
+          echo "VALIDATE_REDMINE = ${{ vars.VALIDATE_REDMINE }}"
+          echo "Set VALIDATE_REDMINE to YES in repo variables to enable validation"
+          echo "Skipping all Redmine steps — workflow passing without checks"
 
       - name: Extract issue number from branch
         if: steps.flag.outputs.enabled == 'true'
@@ -56,7 +57,7 @@ jobs:
           fi
 
       - name: Check ticket in Redmine
-        if: |
+        if: >-
           steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true'
         id: check
@@ -78,7 +79,7 @@ jobs:
           echo "Redmine response body:"
           cat response.json
 
-          if [ "$RESPONSE" == "200" ]; then
+          if [ "$RESPONSE" = "200" ]; then
             PROJECT=$(cat response.json | python3 -c \
               "import sys,json; d=json.load(sys.stdin); print(d['issue']['project']['name'])")
             echo "Ticket belongs to project: $PROJECT"
@@ -90,7 +91,7 @@ jobs:
           fi
 
       - name: Get PR reviewers and approvers
-        if: |
+        if: >-
           steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true'
         id: reviewers
@@ -130,7 +131,7 @@ jobs:
             core.setOutput('all_reviews', allReviews);
 
       - name: Post error comment on PR
-        if: |
+        if: >-
           steps.flag.outputs.enabled == 'true' &&
           (steps.extract.outputs.found == 'false' ||
           steps.check.outputs.project != steps.check.outputs.expected)
@@ -171,7 +172,7 @@ jobs:
             core.setFailed('Redmine ticket validation failed');
 
       - name: Post success comment on PR
-        if: |
+        if: >-
           steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true' &&
           steps.check.outputs.project == steps.check.outputs.expected
@@ -190,7 +191,7 @@ jobs:
             });
 
       - name: Write Redmine comment script for PR opened
-        if: |
+        if: >-
           steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true' &&
           steps.check.outputs.project == steps.check.outputs.expected &&
@@ -198,7 +199,6 @@ jobs:
         run: |
           cat > redmine_comment.py << 'PYEOF'
           import os, json, urllib.request
-
           issue_id    = os.environ['ISSUE_ID']
           pr_number   = os.environ['PR_NUMBER']
           pr_title    = os.environ['PR_TITLE']
@@ -214,7 +214,6 @@ jobs:
           created_at  = os.environ['PR_CREATED_AT']
           api_key     = os.environ['REDMINE_API_KEY']
           redmine_url = os.environ['REDMINE_URL']
-
           lines = [
             "### GitHub Pull Request Notification",
             "",
@@ -247,22 +246,19 @@ jobs:
             "",
             "_Added automatically by GitHub Actions webhook_"
           ]
-
           comment = "\n".join(lines)
           payload = json.dumps({"issue": {"notes": comment}}).encode("utf-8")
           url = redmine_url + "/issues/" + issue_id + ".json"
-
           req = urllib.request.Request(url, data=payload, method="PUT")
           req.add_header("X-Redmine-API-Key", api_key)
           req.add_header("Content-Type", "application/json")
-
           with urllib.request.urlopen(req) as resp:
             print("Redmine status: " + str(resp.status))
             print("Ticket #" + issue_id + " updated successfully")
           PYEOF
 
       - name: Run Redmine comment script for PR opened
-        if: |
+        if: >-
           steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true' &&
           steps.check.outputs.project == steps.check.outputs.expected &&
@@ -286,7 +282,7 @@ jobs:
         run: python3 redmine_comment.py
 
       - name: Write Redmine comment script for PR closed or merged
-        if: |
+        if: >-
           steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true' &&
           steps.check.outputs.project == steps.check.outputs.expected &&
@@ -294,7 +290,6 @@ jobs:
         run: |
           cat > redmine_closed.py << 'PYEOF'
           import os, json, urllib.request
-
           issue_id    = os.environ['ISSUE_ID']
           pr_number   = os.environ['PR_NUMBER']
           pr_title    = os.environ['PR_TITLE']
@@ -311,14 +306,12 @@ jobs:
           all_reviews = os.environ['ALL_REVIEWS']
           api_key     = os.environ['REDMINE_API_KEY']
           redmine_url = os.environ['REDMINE_URL']
-
           if merged == 'true':
             status     = 'MERGED'
             merge_info = ["- **Merged By:** @" + merged_by, "- **Merged At:** " + merged_at]
           else:
             status     = 'CLOSED WITHOUT MERGE'
             merge_info = ["- **Closed At:** " + closed_at, "- **Merged:** No"]
-
           lines = [
             "### GitHub Pull Request " + status,
             "",
@@ -350,22 +343,19 @@ jobs:
             "",
             "_Added automatically by GitHub Actions webhook_"
           ]
-
           comment = "\n".join(lines)
           payload = json.dumps({"issue": {"notes": comment}}).encode("utf-8")
           url = redmine_url + "/issues/" + issue_id + ".json"
-
           req = urllib.request.Request(url, data=payload, method="PUT")
           req.add_header("X-Redmine-API-Key", api_key)
           req.add_header("Content-Type", "application/json")
-
           with urllib.request.urlopen(req) as resp:
             print("Redmine status: " + str(resp.status))
             print("Ticket #" + issue_id + " updated with closed/merged comment")
           PYEOF
 
       - name: Run Redmine comment script for PR closed or merged
-        if: |
+        if: >-
           steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true' &&
           steps.check.outputs.project == steps.check.outputs.expected &&
