@@ -47,7 +47,7 @@ jobs:
           RESPONSE=$(curl -s -o response.json -w "%{http_code}" \
             -H "X-Redmine-API-Key: ${{ secrets.REDMINE_API_KEY }}" \
             -H "Content-Type: application/json" \
-            "https://redmine.evaequitytest.com/issues/$ISSUE_ID.json")
+            "https://redmine.evaequitymtest.com/issues/$ISSUE_ID.json")
 
           echo "HTTP status: $RESPONSE"
           echo "Redmine response body:"
