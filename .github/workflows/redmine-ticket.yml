@@ -1,0 +1,91 @@
+name: Validate Redmine Ticket on PR
+
+on:
+  pull_request:
+    branches:
+      - develop
+    types: [opened, reopened, synchronize]
+
+jobs:
+  validate-ticket:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract issue number from branch name
+        id: extract
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          echo "Branch name: $BRANCH"
+          ISSUE_ID=$(echo "$BRANCH" | grep -oP '\d+')
+          if [ -z "$ISSUE_ID" ]; then
+            echo "No issue number found in branch name"
+            echo "found=false" >> $GITHUB_OUTPUT
+          else
+            echo "issue_id=$ISSUE_ID" >> $GITHUB_OUTPUT
+            echo "found=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check ticket exists in Redmine Project1
+        if: steps.extract.outputs.found == 'true'
+        id: check
+        run: |
+          ISSUE_ID="${{ steps.extract.outputs.issue_id }}"
+          REDMINE_URL="https://redmine.evaequitymtest.com"
+          PROJECT_IDENTIFIER="Automatic Linking of PR"   # <-- your Redmine project identifier
+
+          RESPONSE=$(curl -s -o response.json -w "%{http_code}" \
+            -H "X-Redmine-API-Key: ${{ secrets.REDMINE_API_KEY }}" \
+            "$REDMINE_URL/issues/$ISSUE_ID.json")
+
+          echo "HTTP status: $RESPONSE"
+
+          if [ "$RESPONSE" == "200" ]; then
+            PROJECT=$(cat response.json | python3 -c \
+              "import sys,json; print(json.load(sys.stdin)['issue']['project']['identifier'])")
+            echo "project=$PROJECT" >> $GITHUB_OUTPUT
+            echo "Ticket belongs to project: $PROJECT"
+          else
+            echo "project=not_found" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post error comment — ticket not found or wrong project
+        if: |
+          steps.extract.outputs.found == 'false' ||
+          steps.check.outputs.project != 'project1'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.payload.pull_request.head.ref;
+            const issueId = '${{ steps.extract.outputs.issue_id }}';
+            const project = '${{ steps.check.outputs.project }}';
+
+            let message = '';
+            if ('${{ steps.extract.outputs.found }}' === 'false') {
+              message = `Branch name \`${branch}\` does not contain a valid Redmine ticket number.\n\nPlease rename your branch to follow the format: \`features/<ticket-id>\``;
+            } else {
+              message = `Ticket **#${issueId}** does not belong to **Project1**.\n\nFound in project: \`${project || 'not found'}\`\n\nThis PR must reference a ticket from **Project1** only.`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `## Redmine Ticket Validation Failed\n\n${message}`
+            });
+
+            core.setFailed('Redmine ticket validation failed');
+
+      - name: Post success comment — ticket verified
+        if: |
+          steps.extract.outputs.found == 'true' &&
+          steps.check.outputs.project == 'project1'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueId = '${{ steps.extract.outputs.issue_id }}';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `## Redmine Ticket Validation Passed\n\nTicket **#${issueId}** verified in **Project1**.\n\nThis PR is linked to the correct Redmine project.`
+            });
