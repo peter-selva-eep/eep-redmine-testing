@@ -82,12 +82,21 @@ jobs:
           if [ "$RESPONSE" = "200" ]; then
             PROJECT=$(cat response.json | python3 -c \
               "import sys,json; d=json.load(sys.stdin); print(d['issue']['project']['name'])")
+            CURRENT_STATUS=$(cat response.json | python3 -c \
+              "import sys,json; d=json.load(sys.stdin); print(d['issue']['status']['name'])")
+            STATUS_ID=$(cat response.json | python3 -c \
+              "import sys,json; d=json.load(sys.stdin); print(d['issue']['status']['id'])")
             echo "Ticket belongs to project: $PROJECT"
+            echo "Current ticket status: $CURRENT_STATUS (id: $STATUS_ID)"
             echo "project=$PROJECT" >> $GITHUB_OUTPUT
             echo "expected=$PROJECT_NAME" >> $GITHUB_OUTPUT
+            echo "current_status=$CURRENT_STATUS" >> $GITHUB_OUTPUT
+            echo "current_status_id=$STATUS_ID" >> $GITHUB_OUTPUT
           else
             echo "project=not_found" >> $GITHUB_OUTPUT
             echo "expected=$PROJECT_NAME" >> $GITHUB_OUTPUT
+            echo "current_status=unknown" >> $GITHUB_OUTPUT
+            echo "current_status_id=0" >> $GITHUB_OUTPUT
           fi
 
       - name: Get PR reviewers and approvers
@@ -182,13 +191,108 @@ jobs:
           script: |
             const issueId = '${{ steps.extract.outputs.issue_id }}';
             const project = '${{ steps.check.outputs.project }}';
+            const currentStatus = '${{ steps.check.outputs.current_status }}';
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.pull_request.number,
-              body: `## Redmine Ticket Validation Passed\n\nTicket **#${issueId}** verified in **${project}**.`
+              body: `## Redmine Ticket Validation Passed\n\nTicket **#${issueId}** verified in **${project}**.\nCurrent status: **${currentStatus}**`
             });
+
+      - name: Move ticket to Ready for Review on PR created
+        if: >-
+          steps.flag.outputs.enabled == 'true' &&
+          steps.extract.outputs.found == 'true' &&
+          steps.check.outputs.project == steps.check.outputs.expected &&
+          github.event.action != 'closed'
+        run: |
+          ISSUE_ID="${{ steps.extract.outputs.issue_id }}"
+          CURRENT_STATUS="${{ steps.check.outputs.current_status }}"
+          REDMINE_URL="${{ vars.REDMINE_URL }}"
+
+          echo "Current ticket status: $CURRENT_STATUS"
+          echo "PR action: ${{ github.event.action }}"
+
+          # Only move if ticket is In Progress
+          if [ "$CURRENT_STATUS" = "In Progress" ]; then
+            echo "Moving ticket #$ISSUE_ID from In Progress → Ready for Review"
+
+            # Get Ready for Review status ID
+            STATUSES=$(curl -s \
+              -H "X-Redmine-API-Key: ${{ secrets.REDMINE_API_KEY }}" \
+              "$REDMINE_URL/issue_statuses.json")
+
+            STATUS_ID=$(echo "$STATUSES" | python3 -c \
+              "import sys,json; statuses=json.load(sys.stdin)['issue_statuses']; \
+              match=[s['id'] for s in statuses if s['name']=='Ready for Review']; \
+              print(match[0] if match else 0)")
+
+            echo "Ready for Review status ID: $STATUS_ID"
+
+            if [ "$STATUS_ID" != "0" ]; then
+              curl -s -X PUT \
+                -H "X-Redmine-API-Key: ${{ secrets.REDMINE_API_KEY }}" \
+                -H "Content-Type: application/json" \
+                -d "{\"issue\": {\"status_id\": $STATUS_ID}}" \
+                "$REDMINE_URL/issues/$ISSUE_ID.json"
+              echo "Ticket #$ISSUE_ID moved to Ready for Review"
+            else
+              echo "Could not find Ready for Review status ID — skipping status change"
+            fi
+          else
+            echo "Ticket is currently '$CURRENT_STATUS' — not In Progress, skipping status move"
+          fi
+
+      - name: Move ticket to Ready for QA on PR merged
+        if: >-
+          steps.flag.outputs.enabled == 'true' &&
+          steps.extract.outputs.found == 'true' &&
+          steps.check.outputs.project == steps.check.outputs.expected &&
+          github.event.action == 'closed' &&
+          github.event.pull_request.merged == true
+        run: |
+          ISSUE_ID="${{ steps.extract.outputs.issue_id }}"
+          CURRENT_STATUS="${{ steps.check.outputs.current_status }}"
+          REDMINE_URL="${{ vars.REDMINE_URL }}"
+
+          echo "Current ticket status: $CURRENT_STATUS"
+
+          # Skip if ticket is already Ready for QA
+          if [ "$CURRENT_STATUS" = "Ready for QA" ]; then
+            echo "Ticket #$ISSUE_ID is already Ready for QA — skipping status change"
+            exit 0
+          fi
+
+          # Only move if ticket is Ready for Review
+          if [ "$CURRENT_STATUS" = "Ready for Review" ]; then
+            echo "Moving ticket #$ISSUE_ID from Ready for Review → Ready for QA"
+
+            # Get Ready for QA status ID
+            STATUSES=$(curl -s \
+              -H "X-Redmine-API-Key: ${{ secrets.REDMINE_API_KEY }}" \
+              "$REDMINE_URL/issue_statuses.json")
+
+            STATUS_ID=$(echo "$STATUSES" | python3 -c \
+              "import sys,json; statuses=json.load(sys.stdin)['issue_statuses']; \
+              match=[s['id'] for s in statuses if s['name']=='Ready for QA']; \
+              print(match[0] if match else 0)")
+
+            echo "Ready for QA status ID: $STATUS_ID"
+
+            if [ "$STATUS_ID" != "0" ]; then
+              curl -s -X PUT \
+                -H "X-Redmine-API-Key: ${{ secrets.REDMINE_API_KEY }}" \
+                -H "Content-Type: application/json" \
+                -d "{\"issue\": {\"status_id\": $STATUS_ID}}" \
+                "$REDMINE_URL/issues/$ISSUE_ID.json"
+              echo "Ticket #$ISSUE_ID moved to Ready for QA"
+            else
+              echo "Could not find Ready for QA status ID — skipping status change"
+            fi
+          else
+            echo "Ticket is currently '$CURRENT_STATUS' — not Ready for Review, skipping status move"
+          fi
 
       - name: Write Redmine comment script for PR opened
         if: >-
@@ -214,6 +318,7 @@ jobs:
           created_at  = os.environ['PR_CREATED_AT']
           api_key     = os.environ['REDMINE_API_KEY']
           redmine_url = os.environ['REDMINE_URL']
+          prev_status = os.environ['PREV_STATUS']
           lines = [
             "### GitHub Pull Request Notification",
             "",
@@ -241,6 +346,12 @@ jobs:
             "",
             "**Timeline:**",
             "- **PR Created At:** " + created_at,
+            "",
+            "---",
+            "",
+            "**Status Transition:**",
+            "- **Previous Status:** " + prev_status,
+            "- **New Status:** Ready for Review",
             "",
             "---",
             "",
@@ -279,6 +390,7 @@ jobs:
           PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
           REDMINE_API_KEY: ${{ secrets.REDMINE_API_KEY }}
           REDMINE_URL: ${{ vars.REDMINE_URL }}
+          PREV_STATUS: ${{ steps.check.outputs.current_status }}
         run: python3 redmine_comment.py
 
       - name: Write Redmine comment script for PR closed or merged
@@ -306,11 +418,14 @@ jobs:
           all_reviews = os.environ['ALL_REVIEWS']
           api_key     = os.environ['REDMINE_API_KEY']
           redmine_url = os.environ['REDMINE_URL']
+          prev_status = os.environ['PREV_STATUS']
           if merged == 'true':
             status     = 'MERGED'
+            new_status = 'Ready for QA'
             merge_info = ["- **Merged By:** @" + merged_by, "- **Merged At:** " + merged_at]
           else:
             status     = 'CLOSED WITHOUT MERGE'
+            new_status = 'No change'
             merge_info = ["- **Closed At:** " + closed_at, "- **Merged:** No"]
           lines = [
             "### GitHub Pull Request " + status,
@@ -338,6 +453,12 @@ jobs:
             "",
             "**Merge Details:**",
           ] + merge_info + [
+            "",
+            "---",
+            "",
+            "**Status Transition:**",
+            "- **Previous Status:** " + prev_status,
+            "- **New Status:** " + new_status,
             "",
             "---",
             "",
@@ -377,4 +498,5 @@ jobs:
           ALL_REVIEWS: ${{ steps.reviewers.outputs.all_reviews }}
           REDMINE_API_KEY: ${{ secrets.REDMINE_API_KEY }}
           REDMINE_URL: ${{ vars.REDMINE_URL }}
+          PREV_STATUS: ${{ steps.check.outputs.current_status }}
         run: python3 redmine_closed.py
