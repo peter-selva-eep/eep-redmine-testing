@@ -71,3 +71,24 @@ jobs:
           else
             echo "ℹ️  Skipping issue ID cross-check for release/hotfix branch"
           fi
+
+      - name: Block changes to .github folder
+        run: |
+          echo "Checking for changes in .github folder..."
+
+          # Fetch base branch to compare
+          git fetch origin ${{ github.base_ref }}
+
+          # Get list of changed files
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          # Check if any file is inside .github/
+          if echo "$CHANGED_FILES" | grep -q "^.github/"; then
+            echo "❌ Changes to .github folder are not allowed!"
+            exit 1
+          else
+            echo "✅ No changes in .github folder"
+          fi
