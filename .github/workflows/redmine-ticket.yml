@@ -104,7 +104,7 @@ jobs:
           steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true'
         id: reviewers
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -144,7 +144,7 @@ jobs:
           steps.flag.outputs.enabled == 'true' &&
           (steps.extract.outputs.found == 'false' ||
           steps.check.outputs.project != steps.check.outputs.expected)
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -185,7 +185,7 @@ jobs:
           steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true' &&
           steps.check.outputs.project == steps.check.outputs.expected
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |

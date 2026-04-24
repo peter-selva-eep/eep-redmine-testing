@@ -7,7 +7,7 @@ Branches must follow the pattern:
 - `issues/<issue-number>`
 - `release/<major.minor.patch>`
 - `hotfix/<major.minor.patch>`
-
+ 
 ## Merge Strategy
 This repository uses **Squash and Merge** only.
 - No merge commits allowed
