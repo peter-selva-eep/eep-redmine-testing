@@ -21,7 +21,27 @@ jobs:
       contents: read
 
     steps:
+      - name: Check VALIDATE_REDMINE flag
+        id: flag
+        run: |
+          FLAG="${{ vars.VALIDATE_REDMINE }}"
+          echo "VALIDATE_REDMINE flag: $FLAG"
+          if [ "$FLAG" == "YES" ]; then
+            echo "enabled=true" >> $GITHUB_OUTPUT
+            echo "Redmine validation is ENABLED"
+          else
+            echo "enabled=false" >> $GITHUB_OUTPUT
+            echo "Redmine validation is DISABLED — skipping all checks"
+          fi
+
+      - name: Skip notification
+        if: steps.flag.outputs.enabled == 'false'
+        run: |
+          echo "VALIDATE_REDMINE is set to NO"
+          echo "Skipping all Redmine ticket validation steps"
+
       - name: Extract issue number from branch
+        if: steps.flag.outputs.enabled == 'true'
         id: extract
         run: |
           BRANCH="${{ github.head_ref }}"
@@ -36,18 +56,23 @@ jobs:
           fi
 
       - name: Check ticket in Redmine
-        if: steps.extract.outputs.found == 'true'
+        if: |
+          steps.flag.outputs.enabled == 'true' &&
+          steps.extract.outputs.found == 'true'
         id: check
         run: |
           ISSUE_ID="${{ steps.extract.outputs.issue_id }}"
-          PROJECT_NAME="Automatic Linking of PR"
+          PROJECT_NAME="${{ vars.REDMINE_PROJECT_NAME }}"
+          REDMINE_URL="${{ vars.REDMINE_URL }}"
 
-          echo "Checking Redmine for issue: $ISSUE_ID"
+          echo "Redmine URL:    $REDMINE_URL"
+          echo "Project Name:   $PROJECT_NAME"
+          echo "Checking issue: $ISSUE_ID"
 
           RESPONSE=$(curl -s -o response.json -w "%{http_code}" \
             -H "X-Redmine-API-Key: ${{ secrets.REDMINE_API_KEY }}" \
             -H "Content-Type: application/json" \
-            "https://redmine.evaequitymtest.com/issues/$ISSUE_ID.json")
+            "$REDMINE_URL/issues/$ISSUE_ID.json")
 
           echo "HTTP status: $RESPONSE"
           echo "Redmine response body:"
@@ -65,7 +90,9 @@ jobs:
           fi
 
       - name: Get PR reviewers and approvers
-        if: steps.extract.outputs.found == 'true'
+        if: |
+          steps.flag.outputs.enabled == 'true' &&
+          steps.extract.outputs.found == 'true'
         id: reviewers
         uses: actions/github-script@v7
         with:
@@ -104,8 +131,9 @@ jobs:
 
       - name: Post error comment on PR
         if: |
-          steps.extract.outputs.found == 'false' ||
-          steps.check.outputs.project != steps.check.outputs.expected
+          steps.flag.outputs.enabled == 'true' &&
+          (steps.extract.outputs.found == 'false' ||
+          steps.check.outputs.project != steps.check.outputs.expected)
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -127,7 +155,7 @@ jobs:
               msg = [
                 `Ticket **#${issueId}** was found in project \`${foundProject || 'not found'}\`.`,
                 ``,
-                `This PR must reference a ticket from the **Automatic Linking of PR** project only.`,
+                `This PR must reference a ticket from the **${{ vars.REDMINE_PROJECT_NAME }}** project only.`,
                 ``,
                 `Please make sure your branch references a valid ticket from the correct project.`
               ].join('\n');
@@ -144,6 +172,7 @@ jobs:
 
       - name: Post success comment on PR
         if: |
+          steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true' &&
           steps.check.outputs.project == steps.check.outputs.expected
         uses: actions/github-script@v7
@@ -162,6 +191,7 @@ jobs:
 
       - name: Write Redmine comment script for PR opened
         if: |
+          steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true' &&
           steps.check.outputs.project == steps.check.outputs.expected &&
           github.event.action != 'closed'
@@ -183,6 +213,7 @@ jobs:
           approvers   = os.environ['APPROVERS']
           created_at  = os.environ['PR_CREATED_AT']
           api_key     = os.environ['REDMINE_API_KEY']
+          redmine_url = os.environ['REDMINE_URL']
 
           lines = [
             "### GitHub Pull Request Notification",
@@ -219,7 +250,7 @@ jobs:
 
           comment = "\n".join(lines)
           payload = json.dumps({"issue": {"notes": comment}}).encode("utf-8")
-          url = "https://redmine.evaequitymtest.com/issues/" + issue_id + ".json"
+          url = redmine_url + "/issues/" + issue_id + ".json"
 
           req = urllib.request.Request(url, data=payload, method="PUT")
           req.add_header("X-Redmine-API-Key", api_key)
@@ -232,6 +263,7 @@ jobs:
 
       - name: Run Redmine comment script for PR opened
         if: |
+          steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true' &&
           steps.check.outputs.project == steps.check.outputs.expected &&
           github.event.action != 'closed'
@@ -250,10 +282,12 @@ jobs:
           APPROVERS: ${{ steps.reviewers.outputs.approvers }}
           PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
           REDMINE_API_KEY: ${{ secrets.REDMINE_API_KEY }}
+          REDMINE_URL: ${{ vars.REDMINE_URL }}
         run: python3 redmine_comment.py
 
       - name: Write Redmine comment script for PR closed or merged
         if: |
+          steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true' &&
           steps.check.outputs.project == steps.check.outputs.expected &&
           github.event.action == 'closed'
@@ -276,6 +310,7 @@ jobs:
           approvers   = os.environ['APPROVERS']
           all_reviews = os.environ['ALL_REVIEWS']
           api_key     = os.environ['REDMINE_API_KEY']
+          redmine_url = os.environ['REDMINE_URL']
 
           if merged == 'true':
             status     = 'MERGED'
@@ -318,7 +353,7 @@ jobs:
 
           comment = "\n".join(lines)
           payload = json.dumps({"issue": {"notes": comment}}).encode("utf-8")
-          url = "https://redmine.evaequitymtest.com/issues/" + issue_id + ".json"
+          url = redmine_url + "/issues/" + issue_id + ".json"
 
           req = urllib.request.Request(url, data=payload, method="PUT")
           req.add_header("X-Redmine-API-Key", api_key)
@@ -331,6 +366,7 @@ jobs:
 
       - name: Run Redmine comment script for PR closed or merged
         if: |
+          steps.flag.outputs.enabled == 'true' &&
           steps.extract.outputs.found == 'true' &&
           steps.check.outputs.project == steps.check.outputs.expected &&
           github.event.action == 'closed'
@@ -350,4 +386,5 @@ jobs:
           APPROVERS: ${{ steps.reviewers.outputs.approvers }}
           ALL_REVIEWS: ${{ steps.reviewers.outputs.all_reviews }}
           REDMINE_API_KEY: ${{ secrets.REDMINE_API_KEY }}
+          REDMINE_URL: ${{ vars.REDMINE_URL }}
         run: python3 redmine_closed.py
