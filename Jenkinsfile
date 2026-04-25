@@ -4,7 +4,7 @@ pipeline {
     stages {
 
         stage('Step 1: Deployment Start Notification') {
-            steps {
+            steps { 
                 echo "Step 1: Deployment Start Notification - Started"
             }
         }
