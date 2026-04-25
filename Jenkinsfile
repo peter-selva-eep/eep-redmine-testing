@@ -1,32 +1,47 @@
 pipeline {
-    agent any 
- 
-    /*
-    ─────────────────────────────────────────────────────────────
-     BRANCH STRATEGY 
-       • PR opened / new commit pushed  → Stages 1-5  (CI only)
-       • PR merged into develop         → Stages 1-6  (CI + Deploy)
+    agent any
 
-     Jenkins multibranch pipeline exposes:
-       env.BRANCH_NAME          → e.g. "PR-42"  or  "develop"
-       env.CHANGE_ID            → set ONLY on PR builds
-       env.CHANGE_TARGET        → target branch of the PR  (e.g. "develop")
-    ─────────────────────────────────────────────────────────────
+    /*
+    ══════════════════════════════════════════════════════════════════
+     BEST PRACTICE — BUILD ONCE, PROMOTE ON MERGE
+    ──────────────────────────────────────────────────────────────────
+     PR BUILD   (features|bugs|release|hotfix → develop)
+       Stage 1  Notification
+       Stage 2  Git Checkout
+       Stage 3  SonarQube Scan
+       Stage 4  Docker Build
+       Stage 5  Push to ECR  →  tagged as  pr-<PR_ID>-<BUILD_NO>
+
+     MERGE BUILD (PR merged into develop)
+       Stage 1  Notification
+       Stage 6  Retag PR image → develop-latest  +  kubectl deploy
+
+     WHY THIS IS BETTER
+       - Docker image is built ONCE on the PR
+       - The EXACT same image that passed CI gets deployed
+       - No wasted rebuild on merge
+       - You can always trace which PR image is running in K8s
+    ══════════════════════════════════════════════════════════════════
     */
 
     environment {
-        // ── Project settings ───────────────────────────────────
-        APP_NAME        = 'your-app-name'
-        ECR_REGISTRY    = '123456789012.dkr.ecr.ap-south-1.amazonaws.com'
-        ECR_REPO        = 'your-ecr-repo-name'
-        K8S_DEPLOYMENT  = 'your-k8s-deployment-name'
-        K8S_CONTAINER   = 'your-container-name'
-        GOOGLE_CHAT_SPACE = 'your-google-chat-webhook-url'
+        APP_NAME            = 'your-app-name'
+        ECR_REGISTRY        = '123456789012.dkr.ecr.ap-south-1.amazonaws.com'
+        ECR_REPO            = 'your-ecr-repo-name'
+        AWS_REGION          = 'ap-south-1'
+        K8S_DEPLOYMENT      = 'your-k8s-deployment-name'
+        K8S_CONTAINER       = 'your-container-name'
+        K8S_NAMESPACE       = 'default'
+        SONARQUBE_SERVER    = 'SonarQube'
+        GOOGLE_CHAT_WEBHOOK = 'your-google-chat-webhook-url'
 
-        // ── Derived ────────────────────────────────────────────
-        IMAGE_TAG       = "${env.BUILD_NUMBER}"
-        IS_PR_BUILD     = "${env.CHANGE_ID != null}"          // true  → PR build
-        IS_MERGE_BUILD  = "${env.BRANCH_NAME == 'develop' && env.CHANGE_ID == null}" // true → merged
+        // PR build  → image tagged as  pr-42-build-7
+        // Merge build → retagged as    develop-latest
+        PR_IMAGE_TAG        = "pr-${env.CHANGE_ID ?: 'merge'}-build-${env.BUILD_NUMBER}"
+        DEPLOY_IMAGE_TAG    = "develop-latest"
+
+        PR_IMAGE_FULL       = "${ECR_REGISTRY}/${ECR_REPO}:${PR_IMAGE_TAG}"
+        DEPLOY_IMAGE_FULL   = "${ECR_REGISTRY}/${ECR_REPO}:${DEPLOY_IMAGE_TAG}"
     }
 
     options {
@@ -38,161 +53,189 @@ pipeline {
 
     stages {
 
-        // ── Stage 1: Notification ──────────────────────────────
+        // ══════════════════════════════════════════════════════════
+        //  STAGE 1 — Notification
+        //  Runs on: BOTH PR build and Merge build
+        // ══════════════════════════════════════════════════════════
         stage('Deployment Started Notification') {
-            steps {
-                script {
-                    def triggerType = env.CHANGE_ID
-                        ? "PR-${env.CHANGE_ID} | ${env.CHANGE_BRANCH} → ${env.CHANGE_TARGET}"
-                        : "Merge to ${env.BRANCH_NAME}"
-
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo " [STAGE 1] Deployment Started Notification"
-                    echo " Trigger  : ${triggerType}"
-                    echo " Build No : ${env.BUILD_NUMBER}"
-                    echo " Job Name : ${env.JOB_NAME}"
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-                    // TODO: Replace echo with real Google Chat webhook call
-                    // example:
-                    // httpRequest(
-                    //     url: "${GOOGLE_CHAT_SPACE}",
-                    //     httpMode: 'POST',
-                    //     contentType: 'APPLICATION_JSON',
-                    //     requestBody: """{"text": "🚀 Pipeline started for ${triggerType}"}"""
-                    // )
+            when {
+                anyOf {
+                    allOf {
+                        branch 'develop'
+                        not { changeRequest() }
+                    }
+                    allOf {
+                        changeRequest target: 'develop'
+                        anyOf {
+                            changeRequest branch: 'features/*'
+                            changeRequest branch: 'bugs/*'
+                            changeRequest branch: 'release/*'
+                            changeRequest branch: 'hotfix/*'
+                        }
+                    }
                 }
+            }
+            steps {
+                echo "Stage 1 : Deployment Started Notification"
             }
         }
 
-        // ── Stage 2: Git Checkout ──────────────────────────────
+        // ══════════════════════════════════════════════════════════
+        //  STAGE 2 — Git Checkout
+        //  Runs on: PR build only
+        // ══════════════════════════════════════════════════════════
         stage('Git Checkout') {
-            steps {
-                script {
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo " [STAGE 2] Git Checkout"
-                    echo " Branch   : ${env.BRANCH_NAME}"
-                    echo " Commit   : ${env.GIT_COMMIT ?: 'N/A'}"
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-                    // TODO: Replace with actual checkout when using scripted SCM
-                    // checkout scm    ← (already done automatically in Multibranch Pipeline)
+            when {
+                allOf {
+                    changeRequest target: 'develop'
+                    anyOf {
+                        changeRequest branch: 'features/*'
+                        changeRequest branch: 'bugs/*'
+                        changeRequest branch: 'release/*'
+                        changeRequest branch: 'hotfix/*'
+                    }
                 }
+            }
+            steps {
+                echo "Stage 2 : Git Checkout"
+                // checkout scm
             }
         }
 
-        // ── Stage 3: SonarQube Scan ────────────────────────────
+        // ══════════════════════════════════════════════════════════
+        //  STAGE 3 — SonarQube Scan
+        //  Runs on: PR build only
+        // ══════════════════════════════════════════════════════════
         stage('SonarQube Scan') {
-            steps {
-                script {
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo " [STAGE 3] SonarQube Scan"
-                    echo " Scanning project: ${APP_NAME}"
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-                    // TODO: Replace with real SonarQube scan
-                    // withSonarQubeEnv('SonarQube') {
-                    //     sh 'mvn sonar:sonar'   // or your build tool
-                    // }
-                    // waitForQualityGate abortPipeline: true
+            when {
+                allOf {
+                    changeRequest target: 'develop'
+                    anyOf {
+                        changeRequest branch: 'features/*'
+                        changeRequest branch: 'bugs/*'
+                        changeRequest branch: 'release/*'
+                        changeRequest branch: 'hotfix/*'
+                    }
                 }
+            }
+            steps {
+                echo "Stage 3 : SonarQube Scan"
+                // withSonarQubeEnv("${SONARQUBE_SERVER}") { sh 'mvn sonar:sonar' }
+                // waitForQualityGate abortPipeline: true
             }
         }
 
-        // ── Stage 4: Docker Build ──────────────────────────────
+        // ══════════════════════════════════════════════════════════
+        //  STAGE 4 — Docker Build
+        //  Runs on: PR build only
+        //  Tags image as  pr-<PR_ID>-build-<BUILD_NO>
+        // ══════════════════════════════════════════════════════════
         stage('Docker Build') {
-            steps {
-                script {
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo " [STAGE 4] Docker Build"
-                    echo " Image    : ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-                    // TODO: Replace with real Docker build
-                    // sh "docker build -t ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG} ."
+            when {
+                allOf {
+                    changeRequest target: 'develop'
+                    anyOf {
+                        changeRequest branch: 'features/*'
+                        changeRequest branch: 'bugs/*'
+                        changeRequest branch: 'release/*'
+                        changeRequest branch: 'hotfix/*'
+                    }
                 }
+            }
+            steps {
+                echo "Stage 4 : Docker Build → ${PR_IMAGE_FULL}"
+                // sh "docker build -t ${PR_IMAGE_FULL} ."
             }
         }
 
-        // ── Stage 5: Docker Image Push to ECR ─────────────────
+        // ══════════════════════════════════════════════════════════
+        //  STAGE 5 — Docker Image Push To ECR
+        //  Runs on: PR build only
+        //  Pushes  pr-<PR_ID>-build-<BUILD_NO>  to ECR
+        // ══════════════════════════════════════════════════════════
         stage('Docker Image Push To ECR') {
-            steps {
-                script {
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo " [STAGE 5] Docker Image Push To ECR"
-                    echo " Pushing  : ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-                    // TODO: Replace with real ECR push
-                    // sh """
-                    //     aws ecr get-login-password --region ap-south-1 \
-                    //         | docker login --username AWS --password-stdin ${ECR_REGISTRY}
-                    //     docker push ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
-                    // """
+            when {
+                allOf {
+                    changeRequest target: 'develop'
+                    anyOf {
+                        changeRequest branch: 'features/*'
+                        changeRequest branch: 'bugs/*'
+                        changeRequest branch: 'release/*'
+                        changeRequest branch: 'hotfix/*'
+                    }
                 }
+            }
+            steps {
+                echo "Stage 5 : Docker Image Push To ECR → ${PR_IMAGE_FULL}"
+                // sh """
+                //     aws ecr get-login-password --region ${AWS_REGION} \
+                //         | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                //     docker push ${PR_IMAGE_FULL}
+                // """
             }
         }
 
-        // ── Stage 6: Kubectl Set Image  (MERGE ONLY) ──────────
+        // ══════════════════════════════════════════════════════════
+        //  STAGE 6 — Retag + Kubectl Deploy
+        //  Runs on: MERGE build only
+        //
+        //  Takes the PR image already in ECR
+        //  Retags it as develop-latest
+        //  Deploys that image to Kubernetes
+        //
+        //  NO REBUILD — same image that passed CI gets deployed
+        // ══════════════════════════════════════════════════════════
         stage('Kubectl Set Image') {
-            /*
-              This stage runs ONLY when the build is triggered by a
-              merge into develop (not on PR/feature branch builds).
-              CHANGE_ID is null  →  this is a direct branch build (post-merge)
-              BRANCH_NAME == 'develop'  →  confirms target branch
-            */
             when {
                 allOf {
                     branch 'develop'
-                    not { changeRequest() }   // changeRequest() is true only on PR builds
+                    not { changeRequest() }
                 }
             }
             steps {
-                script {
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo " [STAGE 6] Kubectl Set Image"
-                    echo " Deployment : ${K8S_DEPLOYMENT}"
-                    echo " Container  : ${K8S_CONTAINER}"
-                    echo " New Image  : ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
-                    echo " ✅ Running because PR was MERGED into develop"
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-                    // TODO: Replace with real kubectl command
-                    // sh """
-                    //     kubectl set image deployment/${K8S_DEPLOYMENT} \
-                    //         ${K8S_CONTAINER}=${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG} \
-                    //         --record
-                    // """
-                }
+                echo "Stage 6 : Retag PR image → ${DEPLOY_IMAGE_FULL} and deploy to K8s"
+                // sh """
+                //     // Pull the PR image from ECR
+                //     aws ecr get-login-password --region ${AWS_REGION} \
+                //         | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                //
+                //     // Retag as develop-latest
+                //     docker pull ${PR_IMAGE_FULL}
+                //     docker tag  ${PR_IMAGE_FULL} ${DEPLOY_IMAGE_FULL}
+                //     docker push ${DEPLOY_IMAGE_FULL}
+                //
+                //     // Deploy to Kubernetes
+                //     kubectl set image deployment/${K8S_DEPLOYMENT} \
+                //         ${K8S_CONTAINER}=${DEPLOY_IMAGE_FULL} \
+                //         --namespace=${K8S_NAMESPACE} \
+                //         --record
+                //     kubectl rollout status deployment/${K8S_DEPLOYMENT} \
+                //         --namespace=${K8S_NAMESPACE}
+                // """
             }
         }
 
     } // end stages
 
-    // ── Post Actions ───────────────────────────────────────────
     post {
         success {
             script {
                 def msg = env.CHANGE_ID
-                    ? "✅ PR-${env.CHANGE_ID} CI passed (Stages 1-5). Ready for Architect review & merge."
-                    : "✅ Deploy complete (Stages 1-6). develop branch is live."
-
+                    ? "Stage 1-5 passed for PR-${env.CHANGE_ID} — ready for architect review"
+                    : "Merge build complete — develop deployed to Kubernetes"
                 echo "[POST] SUCCESS → ${msg}"
-                // TODO: Send to Google Chat space
             }
         }
         failure {
             script {
                 def msg = env.CHANGE_ID
-                    ? "❌ PR-${env.CHANGE_ID} CI FAILED. Please fix before requesting review."
-                    : "❌ Deploy FAILED on develop. Investigate immediately."
-
+                    ? "Pipeline FAILED for PR-${env.CHANGE_ID} — fix before review"
+                    : "Merge build FAILED on develop — investigate immediately"
                 echo "[POST] FAILURE → ${msg}"
-                // TODO: Send alert to Google Chat space
             }
         }
         always {
-            echo "[POST] Pipeline finished — Build #${env.BUILD_NUMBER}"
+            echo "[POST] Build #${env.BUILD_NUMBER} → ${currentBuild.currentResult}"
         }
     }
 
