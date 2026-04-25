@@ -30,6 +30,10 @@ pipeline {
         }
 
         stage('Step 4 - Docker Build') {
+            // Runs only on features/* branch
+            when {
+                branch 'features/*'
+            }
             steps {
                 echo "🐳 Step 4: Docker Build Started..."
                 sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
@@ -38,6 +42,10 @@ pipeline {
         }
 
         stage('Step 5 - Push to ECR') {
+            // Runs only on features/* branch
+            when {
+                branch 'features/*'
+            }
             steps {
                 echo "📦 Step 5: Pushing Docker Image to ECR..."
                 echo "✅ Step 5: Image Pushed to ECR Successfully"
@@ -45,6 +53,10 @@ pipeline {
         }
 
         stage('Step 6 - Kubectl Set Image') {
+            // Runs ONLY after merge to qa branch
+            when {
+                branch 'qa'
+            }
             steps {
                 echo "☸️  Step 6: Updating Kubernetes Deployment..."
                 echo "✅ Step 6: Kubectl Set Image Completed"
