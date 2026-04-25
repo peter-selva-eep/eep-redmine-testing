@@ -12,7 +12,7 @@ pipeline {
                     steps { echo "Stage 1: Notification" }
                 }
                 stage('Checkout') {
-                    steps { echo "Stage 2: Checkout" }
+                    steps { echo "Stage 2: Checkout" 
                 }
                 stage('SonarQube') {
                     steps { echo "Stage 3: Sonar" }
