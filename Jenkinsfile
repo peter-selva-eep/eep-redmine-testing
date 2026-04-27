@@ -3,37 +3,52 @@ pipeline {
 
     stages {
 
+        // 🔹 PR Validation Pipeline
         stage('PR Validation') {
             when {
-                changeRequest()   // Runs only for PR
+                changeRequest()
             }
             stages {
                 stage('Notification') {
-                    steps { echo "Stage 1: Notification" }
+                    steps { echo "PR: Notification" }
                 }
                 stage('Checkout') {
-                    steps { echo "Stage 2: Checkout" }
+                    steps { echo "PR: Checkout" }
                 }
                 stage('SonarQube') {
-                    steps { echo "Stage 3: Sonar" }
+                    steps { echo "PR: Sonar" }
                 }
                 stage('Docker Build') {
-                    steps { echo "Stage 4: Build" }
+                    steps { echo "PR: Build Docker Image (no push)" }
                 }
-                stage('Push Image') {
-                    steps { echo "Stage 5: Push" }
+            }
+        }
+
+        // 🔹 Post-Merge Pipeline (Develop Branch)
+        stage('Build & Push') {
+            when {
+                branch 'develop'
+            }
+            stages {
+                stage('Checkout') {
+                    steps { echo "Merge: Checkout" }
+                }
+                stage('Docker Build') {
+                    steps { echo "Merge: Build Docker Image" }
+                }
+                stage('Push to ECR') {
+                    steps { echo "Merge: Push to ECR" }
                 }
             }
         }
 
         stage('Deployment') {
             when {
-                branch 'develop'   // Runs only after merge
+                branch 'develop'
             }
             steps {
-                echo "Stage 6: Deploy"
+                echo "Merge: Deploy using kubectl"
             }
         }
-    } 
+    }
 }
-
