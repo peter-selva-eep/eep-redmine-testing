@@ -34,5 +34,6 @@ pipeline {
                 echo "Stage 6: Deploy"
             }
         }
-    }
+    } 
 }
+
