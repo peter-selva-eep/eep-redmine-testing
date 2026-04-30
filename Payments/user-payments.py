@@ -21,4 +21,6 @@ def main():
         print("The sum is 10 or less")
 
 main()
+
+#Checking for CODEOWNERS
   
