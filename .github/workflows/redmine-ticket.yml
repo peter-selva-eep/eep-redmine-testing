@@ -20,7 +20,6 @@ jobs:
         id: flag
         run: |
           FLAG="${{ vars.VALIDATE_REDMINE }}"
-          echo "VALIDATE_REDMINE flag value: '$FLAG'"
           if [ "$FLAG" = "YES" ]; then
             echo "enabled=true" >> $GITHUB_OUTPUT
           else
@@ -29,21 +28,19 @@ jobs:
 
       - name: Skip if disabled
         if: steps.flag.outputs.enabled == 'false'
-        run: |
-          echo "VALIDATE_REDMINE is disabled — skipping checks"
+        run: echo "Skipping Redmine validation"
 
-      # ✅ FIXED EXTRACTION LOGIC
+      # ✅ FIXED EXTRACTION
       - name: Extract issue number from branch
         if: steps.flag.outputs.enabled == 'true'
         id: extract
         run: |
           BRANCH="${{ github.head_ref }}"
-          echo "Branch name: $BRANCH"
+          echo "Branch: $BRANCH"
 
-          # Extract ONLY number after '/' and before optional '-'
           ISSUE_ID=$(echo "$BRANCH" | sed -n 's|^[^/]*/\([0-9]\+\).*|\1|p')
 
-          echo "Extracted issue ID: $ISSUE_ID"
+          echo "Extracted ID: $ISSUE_ID"
 
           if [ -z "$ISSUE_ID" ]; then
             echo "found=false" >> $GITHUB_OUTPUT
@@ -77,15 +74,72 @@ jobs:
             echo "current_status=unknown" >> $GITHUB_OUTPUT
           fi
 
-      - name: Fail if invalid ticket
+      # 🔴 FAIL CASE
+      - name: Post error comment
         if: steps.flag.outputs.enabled == 'true' && (steps.extract.outputs.found == 'false' || steps.check.outputs.project != steps.check.outputs.expected)
-        run: |
-          echo "❌ Invalid or mismatched Redmine ticket"
-          exit 1
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const branch = context.payload.pull_request.head.ref;
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: `❌ Invalid Redmine ticket for branch \`${branch}\``
+            });
+            core.setFailed("Validation failed")
 
-      - name: Success message
+      # 🟢 SUCCESS CASE
+      - name: Post success comment
         if: steps.flag.outputs.enabled == 'true' && steps.extract.outputs.found == 'true' && steps.check.outputs.project == steps.check.outputs.expected
-        run: |
-          echo "✅ Redmine ticket validation passed"
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const issueId = '${{ steps.extract.outputs.issue_id }}';
+            const status = '${{ steps.check.outputs.current_status }}';
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: `✅ Ticket #${issueId} validated\nStatus: ${status}`
+            });
 
-      # (Optional) Move status logic remains same as your original
+      # 🚀 MOVE TO READY FOR REVIEW
+      - name: Move to Ready for Review
+        if: steps.flag.outputs.enabled == 'true' && github.event.action != 'closed'
+        run: |
+          ISSUE_ID="${{ steps.extract.outputs.issue_id }}"
+          STATUS="${{ steps.check.outputs.current_status }}"
+          REDMINE_URL="${{ vars.REDMINE_URL }}"
+
+          if [ "$STATUS" = "In Progress" ]; then
+            STATUS_ID=$(curl -s \
+              -H "X-Redmine-API-Key: ${{ secrets.REDMINE_API_KEY }}" \
+              "$REDMINE_URL/issue_statuses.json" | \
+              python3 -c "import sys,json;print([s['id'] for s in json.load(sys.stdin)['issue_statuses'] if s['name']=='Ready for Review'][0])")
+
+            curl -s -X PUT \
+              -H "X-Redmine-API-Key: ${{ secrets.REDMINE_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"issue\": {\"status_id\": $STATUS_ID}}" \
+              "$REDMINE_URL/issues/$ISSUE_ID.json"
+          fi
+
+      # 🚀 MOVE TO READY FOR QA
+      - name: Move to Ready for QA
+        if: steps.flag.outputs.enabled == 'true' && github.event.pull_request.merged == true
+        run: |
+          ISSUE_ID="${{ steps.extract.outputs.issue_id }}"
+          STATUS="${{ steps.check.outputs.current_status }}"
+          REDMINE_URL="${{ vars.REDMINE_URL }}"
+
+          if [ "$STATUS" = "Ready for Review" ]; then
+            STATUS_ID=$(curl -s \
+              -H "X-Redmine-API-Key: ${{ secrets.REDMINE_API_KEY }}" \
+              "$REDMINE_URL/issue_statuses.json" | \
+              python3 -c "import sys,json;print([s['id'] for s in json.load(sys.stdin)['issue_statuses'] if s['name']=='Ready for QA'][0])")
+
+            curl -s -X PUT \
+              -H "X-Redmine-API-Key: ${{ secrets.REDMINE_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"issue\": {\"status_id\": $STATUS_ID}}" \
+              "$REDMINE_URL/issues/$ISSUE_ID.json" 
+          fi
